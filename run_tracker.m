@@ -1,10 +1,11 @@
 clear;
 clc;
+close all;
 %  Exploiting the Circulant Structure of Tracking-by-detection with Kernels
 %
 %  Main script for tracking, with a gaussian kernel.
 %
-%  João F. Henriques, 2012
+%  Joï¿½o F. Henriques, 2012
 %  http://www.isr.uc.pt/~henriques/
 
 
@@ -18,7 +19,7 @@ output_sigma_factor = 1/16;		%spatial bandwidth (proportional to target)
 sigma = 0.2;					%gaussian kernel bandwidth
 lambda = 1e-2;					%regularization
 interp_factor = 0.075;			%linear interpolation factor for adaptation
-
+occluded = false;
 
 
 %notation: variables ending with f are in the frequency domain.
@@ -47,8 +48,11 @@ time = 0;  %to calculate FPS
 positions = zeros(numel(img_files), 2);  %to calculate precision
 
 originalPos(1,:) = pos;
-threshold = 15;
+threshold = 5;
 count = 0;
+hankel_order = 9;
+req_measurements = hankel_order*2-1;
+
 for frame = 1:numel(img_files)
     %load image
     im = imread([video_path img_files{frame}]);
@@ -86,68 +90,64 @@ for frame = 1:numel(img_files)
         if r2 > m, r2 =m; end
         if c1 < 1, c1 =1; end
         if c2 > n, c2 = n; end
-        sideLobe(r1:r2,c1:c2) = NaN;
-        meanValue = nanmean(sideLobe(:),'all');
-        stdValue = nanstd(sideLobe(:), 0, 'all');
+        
+        % Ignore window around peak
+        ignore_index = zeros(size(sideLobe));
+        ignore_index(r1:r2,c1:c2) = 1;
+        
+        % Get mean/std dev outside window
+        meanValue = mean(mean(sideLobe(ignore_index ~= 1)));
+        stdValue = std(sideLobe(ignore_index ~= 1));
+        
         PSR(frame,1) = (max(response(:)) - meanValue)/stdValue;  
           
         % Hankel Matrix
-        if (frame > 2 && PSR(frame,1) < threshold)
-            if (count == 1)
-                threshold = 3;
-            else
-                threshold = 5;
-                count = 1;
-            end
+        if frame > req_measurements && PSR(frame,1) < threshold
+            occluded = true;
+            fprintf("Occluded, PSR = %.2f\n",PSR(frame,1));
             
             % Creating the hankel matrix 
-            medValue = median([1:frame]);
-            tempValue = rem(median([1:frame]), 1);
-            if (tempValue == 0.5)
-                colMax = medValue - 0.5;
-                rowMax = medValue + 0.5;
-            else
-                colMax = medValue;
-                rowMax = medValue;
-            end
-            for i = 0:rowMax-1
-                for j = 1 : colMax
-                    Hrow(i+1, j) = positions(i+j, 1);
-                    Hcol(i+1, j) = positions(i+j, 2);
+            Hx = zeros(hankel_order,hankel_order);
+            Hy = zeros(hankel_order,hankel_order);
+            for i = 1:hankel_order
+                for j = 1:hankel_order
+                    index = i+j-2;
+                    Hx(i,j) = positions(frame-req_measurements+index,1);
+                    Hy(i,j) = positions(frame-req_measurements+index,2);
                 end
             end
-            % lecture 18 note slide 8
-            [m,n] = size(Hrow);
-            Vrow = Hrow(1:m-1,1:n-1)\Hrow(1:m-1,n); 
-        
-            Vcol = Hcol(1:m-1,1:n-1)\Hcol(1:m-1,n); 
-            pos = pos - floor(sz/2) + [Hrow(m,1:n-1) * Vrow, Hcol(m,1:n-1) * Vcol;];
-            if (pos(1,1) < 1 || pos(1,1) > m || pos(1,2) < 1 || pos(1,2) > n || isnan(pos(1,1)) || isnan(pos(1,2)))
-                pos = originalPos(frame,:);
-            end
+                    
+            x_coeff = linsolve(Hx(:,1:hankel_order-1),Hx(:,hankel_order));
+            y_coeff = linsolve(Hy(:,1:hankel_order-1),Hy(:,hankel_order));
+            
+            x_guess = round(Hx(end,2:end)*x_coeff);
+            y_guess = round(Hy(end,2:end)*y_coeff);
+            pos = [x_guess,y_guess];
         else
             % Recaculate the pos (given code)
             pos = pos - floor(sz/2) + [row, col];
+            occluded = false;
         end
     end
     
+    % Don't retrain on occluded template
+    if ~occluded
+        %get subwindow at current estimated target position, to train classifer
+        x = get_subwindow(im, pos, sz, cos_window);
 
-    
-    %get subwindow at current estimated target position, to train classifer
-    x = get_subwindow(im, pos, sz, cos_window);
-    
-    %Kernel Regularized Least-Squares, calculate alphas (in Fourier domain)
-    k = dense_gauss_kernel(sigma, x);
-    new_alphaf = yf ./ (fft2(k) + lambda);   %(Eq. 7)
-    new_z = x;
-    
-    if frame == 1,  %first frame, train with a single image
-        alphaf = new_alphaf;
-        z = x;
-    else
-        %subsequent frames, interpolate model
-        alphaf = (1 - interp_factor) * alphaf + interp_factor * new_alphaf;
-        z = (1 - interp_factor) * z + interp_factor * new_z;
+        %Kernel Regularized Least-Squares, calculate alphas (in Fourier domain)
+        k = dense_gauss_kernel(sigma, x);
+        new_alphaf = yf ./ (fft2(k) + lambda);   %(Eq. 7)
+        new_z = x;
+
+        if frame == 1,  %first frame, train with a single image
+            alphaf = new_alphaf;
+            z = x;
+        else
+            %subsequent frames, interpolate model
+            alphaf = (1 - interp_factor) * alphaf + interp_factor * new_alphaf;
+            z = (1 - interp_factor) * z + interp_factor * new_z;
+        end
     end
     
     %save position and calculate FPS
@@ -170,7 +170,7 @@ for frame = 1:numel(img_files)
     end
     
     drawnow
-    % 	pause(0.05)  %uncomment to run slower
+     	pause(0.05)  %uncomment to run slower
 end
 
 if resize_image, positions = positions * 2; end
