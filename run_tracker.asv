@@ -128,7 +128,6 @@ for frame = 1:numel(img_files)
                y_guess = pos(1,2); 
             end
             
-            % Assume constant velocity for the X direction
             V = positions(frame-1,:) -  positions(frame-2,:);
             xTemp = positions(frame-1,1)+V(1,1);
            
