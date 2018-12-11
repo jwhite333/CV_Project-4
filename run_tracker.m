@@ -52,6 +52,7 @@ threshold = 5;
 count = 0;
 hankel_order = 9;
 req_measurements = hankel_order*2-1;
+sq_error = 0;
 
 for frame = 1:numel(img_files)
     %load image
@@ -124,15 +125,15 @@ for frame = 1:numel(img_files)
             y_guess = round(Hy(end,2:end)*y_coeff);
                 
             [m,n]=size(im);
-            if (y_guess < 1 || y_guess > n)
-               y_guess = pos(1,2); 
-            end
+            %x_guess = min(max(1,x_guess),m);
+            y_guess = min(max(1,y_guess),n);
             
             % Assume constant velocity for the X direction
             V = positions(frame-1,:) -  positions(frame-2,:);
             xTemp = positions(frame-1,1)+V(1,1);
-           
-            pos= [xTemp ,y_guess];
+            pos= [xTemp,y_guess];
+            
+            fprintf("Estimated position: [%i,%i]\n",xTemp,y_guess);
         else
             % Recaculate the pos (given code)
             pos = pos - floor(sz/2) + [row, col];
@@ -180,7 +181,12 @@ for frame = 1:numel(img_files)
     end
     
     drawnow
-     	pause(0.05)  %uncomment to run slower
+     	%pause(0.05)  %uncomment to run slower
+        
+    % Calculate squared error ignoring NaN
+    if frame < 352
+        sq_error = sq_error + (ground_truth(frame,1)-pos(1))^2 + (ground_truth(frame,2)-pos(2))^2;
+    end
 end
 
 if resize_image, positions = positions * 2; end
@@ -190,4 +196,5 @@ disp(['Frames-per-second: ' num2str(numel(img_files) / time)])
 %show the precisions plot
 show_precision(positions, ground_truth, video_path)
 
+fprintf("Total squared error: %.2f\n",sq_error);
 
